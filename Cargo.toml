@@ -1,0 +1,10 @@
+[package]
+name = "pygame_spine"
+version = "0.1.0"
+edition = "2021"
+description = "pygamest 生态 Spine 2D 骨骼动画适配层——chine 运行时的原生风格封装（rapier-starfish-debug 同范式）"
+license = "MIT"
+
+[dependencies]
+chine = "0.2"
+glam = "0.33"
