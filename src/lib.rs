@@ -1,44 +1,82 @@
-//! pygame_spine —— Spine 2D 骨骼动画适配层（阶段 4 绑定范式：
-//! rapier-starfish-debug 兄弟 crate 同款——上游运行时 + 生态侧薄适配，
-//! pygame-rs 经 rpy/pygame_spine 绑定面消费）。
+//! `chine`: a pure-Rust Spine 4.3 skeletal animation runtime.
 //!
-//! 上游 = [chine](https://crates.io/crates/chine)（纯 Rust Spine 运行时，
-//! JSON/二进制双加载 + AnimationState 状态机 + render 命令流输出）。
-//! 本 crate 直通其核心面（词汇不pygame化——Spine 惯例即文档），附加
-//! 一个程序化 demo 骨架（三骨链——无资产文件即可跑通绑定/测试链）。
+//! `chine` loads Spine skeleton exports (JSON / binary `.skel`) together with an
+//! atlas, poses and animates a skeleton, and emits renderer-agnostic draw data,
+//! leaving all GPU work to the host engine.
 //!
-//! 渲染接入路径（v1 数据面）：`chine::render::render(&skeleton)` 产出
-//! `RenderCommand` 流（positions/uvs/triangles/page/color）——绑定层已
-//! 透传为 Python 数据；引擎侧带贴图三角网格 draw 面（draw_mesh）落地后
-//! 即接 GPU 管线。
+//! It is a from-scratch reimplementation that references the official Spine 4.3
+//! runtimes, and is **not** affiliated with or endorsed by Esoteric Software.
+//! Using Spine skeleton data requires a valid Spine Editor license.
+//!
+//! # Pipeline
+//!
+//! 1. Load a JSON or binary `.skel` export plus an atlas into a
+//!    `SkeletonData`: the immutable, shareable rig.
+//! 2. Instantiate a `Skeleton` from it: a posable instance.
+//!    `Skeleton::set_skin` shows a named skin.
+//! 3. Each frame, `AnimationState::update` and `apply` drive the skeleton's
+//!    local pose, `Skeleton::update_world_transform` computes the world pose
+//!    (forward kinematics plus IK, transform, path, physics, and slider
+//!    constraints), and the `RenderCommand` stream feeds the host renderer.
+//!
+//! The world transform of each bone is a 2x2 matrix `(a, b, c, d)` plus a world
+//! position `(world_x, world_y)`, computed root-to-children, the same model the
+//! official runtimes use.
+#![warn(missing_docs)]
+#![warn(unreachable_pub)]
+#![warn(clippy::all)]
+// Without a loader feature, the loader-fed timeline variants, channel tables,
+// and data constructors are unused by design: the crate is then a manual
+// pose/render runtime over a hand-built SkeletonData. Allow that dead code only
+// in the no-loader configuration. The loader builds still enforce every warning.
+#![cfg_attr(
+    not(any(feature = "json", feature = "binary")),
+    allow(dead_code, unused_imports)
+)]
 
-pub use chine::anim::{Animation, AnimationState};
-pub use chine::binary;
-pub use chine::data::{BlendMode, BoneData, SkeletonData};
-pub use chine::load;
-pub use chine::render::{self, RenderCommand};
-pub use chine::skel::{Bone, Skeleton};
+pub mod anim;
+pub mod atlas;
+pub mod attach;
+#[cfg(feature = "binary")]
+pub mod binary;
+pub mod clip;
+pub(crate) mod constraint;
+pub mod data;
+pub(crate) mod event;
+pub(crate) mod link;
+#[cfg(feature = "json")]
+pub mod load;
+pub mod render;
+pub mod skel;
+pub mod skin;
+
+// ── pygamest 适配面（demo 构造器 + 惯用重导出）──────────────────────
+
+pub use crate::anim::{Animation, AnimationState};
+pub use crate::data::{BlendMode, BoneData, SkeletonData};
+pub use crate::skel::{Bone, Skeleton};
+pub use crate::render::RenderCommand;
 
 use std::sync::Arc;
 
 /// 程序化 demo 骨架（三骨链 root→arm→hand；无资产依赖——绑定/测试
-/// 链即装即跑）。root 原点，arm 偏移 (50, 0)，hand 相对 arm (40, 0)。
+/// 链即装即跑）。
 pub fn demo_skeleton() -> Arc<SkeletonData> {
     Arc::new(SkeletonData {
         bones: vec![
-            BoneData {
+            crate::data::BoneData {
                 index: 0,
                 name: "root".into(),
                 ..Default::default()
             },
-            BoneData {
+            crate::data::BoneData {
                 index: 1,
                 name: "arm".into(),
                 parent: Some(0),
                 position: glam::Vec2::new(50.0, 0.0),
                 ..Default::default()
             },
-            BoneData {
+            crate::data::BoneData {
                 index: 2,
                 name: "hand".into(),
                 parent: Some(1),
@@ -50,27 +88,106 @@ pub fn demo_skeleton() -> Arc<SkeletonData> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// 带贴图 region 的 demo 骨架（三骨链 + 两 slot 两方块：body 96×96 挂
+/// root、hand 48×48 挂 hand 骨——page0 纹理由调用方供给，uv = region
+/// 全图。零资产渲染 demo 的数据源——与官方 render 测试同构的程序化
+/// 构造路径）。
+pub fn demo_textured_skeleton() -> Arc<SkeletonData> {
+    use crate::attach::{Attachment, RegionAttachment};
+    use crate::atlas::AtlasRegion;
+    use crate::skin::Skin;
+    use crate::data::SlotData;
 
-    #[test]
-    fn demo_chain_setup_pose() {
-        let mut sk = Skeleton::new(demo_skeleton());
-        sk.update_world_transform();
-        let arm = sk.bone(1).unwrap();
-        assert!((arm.world_x() - 50.0).abs() < 1e-4);
-        let hand = sk.bone(2).unwrap();
-        assert!((hand.world_x() - 90.0).abs() < 1e-4);
-    }
+    let region = AtlasRegion {
+        name: "demo".into(),
+        page: 0,
+        x: 0,
+        y: 0,
+        width: 64,
+        height: 64,
+        degrees: 0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+        original_width: 64,
+        original_height: 64,
+        index: -1,
+    };
 
-    #[test]
-    fn demo_rotation_propagates() {
-        let mut sk = Skeleton::new(demo_skeleton());
-        sk.bone_mut(0).unwrap().rotation = 90.0;
-        sk.update_world_transform();
-        let arm = sk.bone(1).unwrap();
-        assert!((arm.world_x() - 0.0).abs() < 1e-4);
-        assert!((arm.world_y() - 50.0).abs() < 1e-4);
-    }
+    let mut body = RegionAttachment::new("body", "demo");
+    body.width = 96.0;
+    body.height = 96.0;
+    body.color = crate::data::Color { r: 0.35, g: 0.75, b: 1.0, a: 1.0 };
+    body.update(&region, 64, 64);
+    body.page = 0;
+
+    let mut hand = RegionAttachment::new("hand", "demo");
+    hand.width = 48.0;
+    hand.height = 48.0;
+    hand.color = crate::data::Color { r: 1.0, g: 0.65, b: 0.3, a: 1.0 };
+    hand.update(&region, 64, 64);
+    hand.page = 0;
+
+    let mut skin = Skin::new("default");
+    skin.set(0, "body", Attachment::Region(body));
+    skin.set(1, "hand", Attachment::Region(hand));
+
+    Arc::new(SkeletonData {
+        bones: vec![
+            crate::data::BoneData {
+                index: 0,
+                name: "root".into(),
+                ..Default::default()
+            },
+            crate::data::BoneData {
+                index: 1,
+                name: "arm".into(),
+                parent: Some(0),
+                position: glam::Vec2::new(70.0, 0.0),
+                ..Default::default()
+            },
+            crate::data::BoneData {
+                index: 2,
+                name: "hand".into(),
+                parent: Some(1),
+                position: glam::Vec2::new(60.0, 0.0),
+                ..Default::default()
+            },
+        ],
+        slots: vec![
+            crate::data::SlotData {
+                index: 0,
+                name: "body_slot".into(),
+                bone: 0,
+                color: crate::data::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+                dark_color: None,
+                blend: crate::data::BlendMode::Normal,
+                attachment: Some("body".into()),
+            },
+            crate::data::SlotData {
+                index: 1,
+                name: "hand_slot".into(),
+                bone: 2,
+                color: crate::data::Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+                dark_color: None,
+                blend: crate::data::BlendMode::Normal,
+                attachment: Some("hand".into()),
+            },
+        ],
+        skins: vec![skin],
+        ..Default::default()
+    })
+}
+
+/// JSON 骨架 + atlas 元数据一体加载并绑定（page 索引/uv 重映射就地
+/// 生效）——返回（绑定完成的骨架数据, 图集页数）。页面纹理由调用方
+/// 经 pygame.image.load 后传入 gfxdraw.draw_spine 的 pages 表。
+pub fn load_with_atlas(
+    json_text: &str,
+    atlas_text: &str,
+) -> Result<(Arc<SkeletonData>, usize), crate::load::LoadError> {
+    let mut data = crate::load::from_json(json_text)?;
+    let atlas = crate::atlas::Atlas::parse(atlas_text);
+    let pages = atlas.pages.len();
+    crate::render::bind_atlas(&mut data, &atlas);
+    Ok((Arc::new(data), pages))
 }
