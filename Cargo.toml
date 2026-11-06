@@ -1,15 +1,11 @@
 [package]
 name = "pygame_spine"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "pygamest 生态 Spine 2D 骨骼动画适配层——chine v0.2.0 vendored（MIT，Oneiriq/chine 溯源）+ 适配面（demo 构造器）"
+description = "pygamest 生态 Spine 2D 骨骼动画适配层——chine v0.2.0 crates.io 依赖（MIT，Oneiriq/chine）+ 薄适配面（demo 构造器/load_with_atlas）；任务4 定约：运行时以 crates.io 依赖引入、不自行维护源码"
 license = "MIT"
 
-[features]
-json = ["dep:serde_json"]
-binary = []
-default = ["json", "binary"]
-
 [dependencies]
+chine = "0.2.0"
+# 版本与 chine 的 glam 同源解析（单实例——Vec2 构造类型互通）
 glam = "0.33"
-serde_json = { version = "1", optional = true }
