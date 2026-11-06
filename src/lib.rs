@@ -191,3 +191,11 @@ pub fn load_with_atlas(
     crate::render::bind_atlas(&mut data, &atlas);
     Ok((Arc::new(data), pages))
 }
+#[test]
+fn spineboy_default_skin_resolves() {
+    let json = std::fs::read_to_string("assets/spineboy/spineboy-ess.json").unwrap();
+    let data = crate::load::from_json(&json).expect("probe load");
+    let names: Vec<String> = data.skins.iter().map(|s| s.name.clone()).collect();
+    println!("[regress] skins = {:?}", names);
+    println!("[regress] find default = {:?}", data.find_skin("default").map(|s| s.name.clone()));
+}

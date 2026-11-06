@@ -208,6 +208,10 @@ impl SkeletonData {
     /// Find a named skin.
     #[must_use]
     pub fn find_skin(&self, name: &str) -> Option<&Skin> {
+        /// default 皮肤存独立字段（Spine 导出惯例）——查询须覆盖
+        if self.default_skin.name == name {
+            return Some(&self.default_skin);
+        }
         self.skins.iter().find(|s| s.name == name)
     }
 

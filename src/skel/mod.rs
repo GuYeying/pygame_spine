@@ -361,7 +361,12 @@ impl Skeleton {
     /// sequence keys drive only the attachments of the skin they name. The
     /// skin can change between frames: this rebuilds the update cache.
     pub fn set_skin(&mut self, name: &str) {
-        self.skin = self.data.skins.iter().position(|s| s.name == name);
+        /// default 皮肤 = None 槽位（Spine 导出惯例：名字匹配优先）
+        if self.data.default_skin.name == name {
+            self.skin = None;
+        } else {
+            self.skin = self.data.skins.iter().position(|s| s.name == name);
+        }
         self.rebuild_cache();
     }
 
